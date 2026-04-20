@@ -1,0 +1,26 @@
+# Build output
+/bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+cover.out
+cover.html
+coverage.out
+
+# Environment
+.env
+.env.local
+
+# WeChat credentials (binary with saved login token)
+wechat-login

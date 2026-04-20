@@ -1,0 +1,4 @@
+minimax:
+  base_url: "https://api.minimaxi.chat/v1"
+  model: "MiniMax-M2.7"
+  max_history_messages: 50

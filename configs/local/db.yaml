@@ -1,0 +1,3 @@
+db:
+  max_open_conns: 5
+  max_idle_conns: 2

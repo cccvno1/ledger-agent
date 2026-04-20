@@ -1,0 +1,7 @@
+goplate_version: 0.1.0
+generated_at: "2026-04-20"
+template_version: v1
+module: github.com/cccvno1/ledger-agent
+name: ledger-agent
+extensions:
+    - http
