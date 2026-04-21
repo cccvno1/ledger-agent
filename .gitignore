@@ -24,3 +24,9 @@ coverage.out
 
 # WeChat credentials (binary with saved login token)
 wechat-login
+
+# Frontend
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
