@@ -1,6 +1,12 @@
-.PHONY: build test run vet lint tidy docker-build docker-up docker-down docker-logs migrate
+.PHONY: build test run vet lint tidy web-install web-build docker-build docker-up docker-down docker-logs migrate
 
-build:
+web-install:
+	cd web && pnpm install
+
+web-build:
+	cd web && pnpm run build
+
+build: web-build
 	go build -o ./bin/server ./cmd/server
 
 test:

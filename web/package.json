@@ -1,0 +1,31 @@
+{
+  "name": "ledger-agent-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@types/qrcode": "^1.5.6",
+    "axios": "^1.7.9",
+    "element-plus": "^2.9.7",
+    "html2canvas": "^1.4.1",
+    "pinia": "^2.3.1",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.1",
+    "vue-tsc": "^2.2.0"
+  }
+}

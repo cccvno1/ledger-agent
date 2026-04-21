@@ -30,12 +30,12 @@ func Run(ctx context.Context, logger *slog.Logger, cfg *conf.Config) error {
 	app := appkit.New(logger)
 	mux := http.NewServeMux()
 
-	customerSvc := customer.Wire(db)
-	ledgerSvc := ledger.Wire(db)
-	productSvc := product.Wire(db)
-	paymentSvc := payment.Wire(db)
+	customerSvc := customer.Wire(mux, db)
+	ledgerSvc := ledger.Wire(mux, db)
+	productSvc := product.Wire(mux, db)
+	paymentSvc := payment.Wire(mux, db)
 
-	chatSvc, err := chat.Wire(ctx, mux, cfg.MiniMax,
+	chatSvc, err := chat.Wire(ctx, mux, db, cfg.MiniMax,
 		&customerAdapter{svc: customerSvc},
 		&ledgerAdapter{svc: ledgerSvc},
 		&ledgerAdapter{svc: ledgerSvc},
@@ -46,7 +46,7 @@ func Run(ctx context.Context, logger *slog.Logger, cfg *conf.Config) error {
 		return fmt.Errorf("boot: chat wire: %w", err)
 	}
 
-	if err := wechat.Wire(ctx, logger, &chatServiceAdapter{svc: chatSvc}); err != nil {
+	if err := wechat.Wire(ctx, mux, logger, &chatServiceAdapter{svc: chatSvc}); err != nil {
 		return fmt.Errorf("boot: wechat wire: %w", err)
 	}
 

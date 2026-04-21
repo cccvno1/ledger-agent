@@ -41,6 +41,7 @@ cp .env.example .env
 ```bash
 DATABASE_URL=postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable
 MINIMAX_API_KEY=your-minimax-api-key-here
+AUTH_TOKEN=$(openssl rand -hex 32)   # 生成随机密钥，前端请求时携带
 ```
 
 ### 3. 启动基础设施
@@ -98,41 +99,27 @@ APP_ENV=local make run
 
 ## API 接口
 
-### `POST /api/v1/chat`
+完整接口文档见 [docs/API.md](docs/API.md)。
 
-**请求：**
-```json
-{
-  "session_id": "user-123",
-  "message": "张三买了10斤苹果，单价5块"
-}
+所有接口（除 `/health` 和 `/api/v1/wechat/qrcode*`）需携带认证头：
+```
+Authorization: Bearer <AUTH_TOKEN>
 ```
 
-**响应：**
-```json
-{
-  "success": true,
-  "data": {
-    "session_id": "user-123",
-    "reply": "已添加到草稿：张三 苹果 10斤 单价5.00 金额50.00",
-    "draft": [
-      {
-        "customer_name": "张三",
-        "product_name": "苹果",
-        "unit_price": 5,
-        "quantity": 10,
-        "unit": "斤",
-        "amount": 50,
-        "entry_date": "2026-04-21T00:00:00+08:00"
-      }
-    ]
-  }
-}
-```
+### 核心接口
 
-### `GET /health`
-
-健康检查端点，返回 `{"success":true,"data":{"status":"ok"}}`。
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/chat` | 自然语言记账 |
+| `GET` | `/api/v1/dashboard` | 首页概览 |
+| `GET/POST` | `/api/v1/entries` | 账目列表 / 创建 |
+| `PUT/DELETE` | `/api/v1/entries/{id}` | 更新 / 删除账目 |
+| `GET` | `/api/v1/customers` | 客户列表 |
+| `GET` | `/api/v1/customers/{id}/summary` | 客户汇总 |
+| `POST` | `/api/v1/customers/{id}/settle` | 一键结算 |
+| `GET/POST` | `/api/v1/payments` | 收款记录 |
+| `GET` | `/api/v1/products` | 商品列表 |
+| `GET` | `/health` | 健康检查 |
 
 ## 对话示例
 

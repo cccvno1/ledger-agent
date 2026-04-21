@@ -134,3 +134,29 @@ func LoadCredentials() (*Credentials, error) {
 	}
 	return &creds, nil
 }
+
+// CheckQRStatus performs a single, non-blocking status check for the given qrcode token.
+// Returns (status, credentials, error). Credentials are non-nil only when status == "confirmed".
+// On timeout or transient network errors, returns ("wait", nil, nil) so callers can retry.
+func CheckQRStatus(ctx context.Context, qrcode string) (string, *Credentials, error) {
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	c := newUnauthClient()
+	url := qrStatusURL + qrcode
+	var resp qrStatusResp
+	if err := c.get(pollCtx, url, &resp); err != nil {
+		// Treat timeout / network errors as "wait" so the caller can retry.
+		return qrStatusWait, nil, nil
+	}
+
+	if resp.Status == qrStatusConfirmed {
+		creds := &Credentials{
+			BotToken:   resp.BotToken,
+			ILinkBotID: resp.ILinkBotID,
+			BaseURL:    resp.BaseURL,
+		}
+		return qrStatusConfirmed, creds, nil
+	}
+	return resp.Status, nil, nil
+}

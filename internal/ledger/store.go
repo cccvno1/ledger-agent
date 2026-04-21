@@ -142,21 +142,36 @@ func (s *Store) MarkSettled(ctx context.Context, tx *sql.Tx, customerID string, 
 	return nil
 }
 
-// SumByCustomer returns outstanding totals grouped by customer.
+// SumByCustomer returns customer totals derived from entries and payments.
 func (s *Store) SumByCustomer(ctx context.Context, customerID string) ([]*CustomerSummary, error) {
 	q := `
-		SELECT customer_id, customer_name,
-		       SUM(amount)                                                  AS total,
-		       SUM(CASE WHEN is_settled THEN amount ELSE 0 END)            AS settled,
-		       SUM(CASE WHEN NOT is_settled THEN amount ELSE 0 END)        AS pending,
-		       COUNT(*)                                                     AS cnt
-		FROM entries`
+		WITH entry_sums AS (
+			SELECT customer_id, customer_name,
+			       COALESCE(SUM(amount), 0) AS total,
+			       COUNT(*)                  AS cnt
+			FROM entries`
 	var args []any
 	if customerID != "" {
 		q += " WHERE customer_id = $1"
 		args = append(args, customerID)
 	}
-	q += " GROUP BY customer_id, customer_name ORDER BY customer_name"
+	q += `
+			GROUP BY customer_id, customer_name
+		),
+		payment_sums AS (
+			SELECT customer_id, COALESCE(SUM(amount), 0) AS paid
+			FROM payments
+			GROUP BY customer_id
+		)
+		SELECT e.customer_id,
+		       e.customer_name,
+		       e.total,
+		       LEAST(e.total, COALESCE(p.paid, 0))      AS settled,
+		       GREATEST(e.total - COALESCE(p.paid, 0), 0) AS pending,
+		       e.cnt
+		FROM entry_sums e
+		LEFT JOIN payment_sums p ON p.customer_id = e.customer_id
+		ORDER BY e.customer_name`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

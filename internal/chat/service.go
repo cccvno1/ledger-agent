@@ -24,13 +24,13 @@ func sessionIDFromCtx(ctx context.Context) string {
 
 // Service orchestrates multi-turn chat with the agent.
 type Service struct {
-	sessions           *SessionStore
+	sessions           SessionStorer
 	agent              *react.Agent
 	maxHistoryMessages int
 }
 
 // NewService creates a Service and builds the underlying agent.
-func NewService(ctx context.Context, cfg conf.MiniMax, sessions *SessionStore, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
+func NewService(ctx context.Context, cfg conf.MiniMax, sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
 	tools := buildTools(sessions, searcher, writer, querier, products, payments)
 	agent, err := buildAgent(ctx, cfg, sessions, tools)
 	if err != nil {

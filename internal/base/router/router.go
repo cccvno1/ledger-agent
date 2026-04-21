@@ -12,4 +12,5 @@ func Register(mux *http.ServeMux, logger *slog.Logger) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httpkit.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	registerStatic(mux)
 }

@@ -4,12 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/cccvno1/goplate/pkg/appkit"
 	"github.com/cccvno1/ledger-agent/internal/base/conf"
 	"github.com/cccvno1/ledger-agent/internal/base/middleware"
 	"github.com/cccvno1/ledger-agent/internal/base/router"
-	"github.com/cccvno1/goplate/pkg/appkit"
 )
 
 type httpServer struct {
@@ -25,9 +26,13 @@ func (h *httpServer) Stop(ctx context.Context) error {
 }
 
 func wireHTTP(_ context.Context, app *appkit.App, logger *slog.Logger, cfg *conf.Config, mux *http.ServeMux) error {
+	// AUTH_TOKEN is optional. When empty the server runs without authentication
+	// (suitable for home/intranet deployments).
+	token := os.Getenv("AUTH_TOKEN")
+
 	router.Register(mux, logger)
 
-	chain := middleware.New(logger)
+	chain := middleware.New(logger, token)
 	var handler http.Handler = mux
 	for i := len(chain) - 1; i >= 0; i-- {
 		handler = chain[i](handler)

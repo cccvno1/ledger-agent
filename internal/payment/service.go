@@ -43,6 +43,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Payment, error) 
 		return nil, errkit.New(errkit.InvalidInput, "payment_date is required")
 	}
 
+	pending, err := s.currentPending(ctx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("payment: create: pending: %w", err)
+	}
+	if pending <= 0 {
+		return nil, errkit.New(errkit.InvalidInput, "customer has no pending balance")
+	}
+	if in.Amount > pending {
+		return nil, errkit.New(errkit.InvalidInput, "amount exceeds pending balance")
+	}
+
 	p := &Payment{
 		ID:          uuid.NewString(),
 		CustomerID:  customerID,
@@ -65,6 +76,30 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Payment, error) 
 		return nil, fmt.Errorf("payment: create: commit: %w", err)
 	}
 	return p, nil
+}
+
+func (s *Service) currentPending(ctx context.Context, customerID string) (float64, error) {
+	var totalEntries float64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount), 0) FROM entries WHERE customer_id = $1`,
+		customerID,
+	).Scan(&totalEntries); err != nil {
+		return 0, fmt.Errorf("query entries total: %w", err)
+	}
+
+	var totalPayments float64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1`,
+		customerID,
+	).Scan(&totalPayments); err != nil {
+		return 0, fmt.Errorf("query payments total: %w", err)
+	}
+
+	pending := totalEntries - totalPayments
+	if pending < 0 {
+		pending = 0
+	}
+	return pending, nil
 }
 
 // ListByCustomer returns all payments for a customer.

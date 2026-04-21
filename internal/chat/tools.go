@@ -176,7 +176,7 @@ type LedgerSummaryRef struct {
 // --- Tool builders ---
 
 // buildTools constructs all agent tools.
-func buildTools(sessions *SessionStore, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) []tool.BaseTool {
+func buildTools(sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) []tool.BaseTool {
 	return []tool.BaseTool{
 		&searchCustomerTool{sessions: sessions, searcher: searcher},
 		&listCustomersTool{sessions: sessions, searcher: searcher},
@@ -197,7 +197,7 @@ func buildTools(sessions *SessionStore, searcher CustomerSearcher, writer Ledger
 // --- search_customer ---
 
 type searchCustomerTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	searcher CustomerSearcher
 }
 
@@ -228,7 +228,7 @@ func (t *searchCustomerTool) InvokableRun(ctx context.Context, argumentsInJSON s
 // --- list_customers ---
 
 type listCustomersTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	searcher CustomerSearcher
 }
 
@@ -251,7 +251,7 @@ func (t *listCustomersTool) InvokableRun(ctx context.Context, _ string, _ ...too
 // --- add_to_draft ---
 
 type addToDraftTool struct {
-	sessions        *SessionStore
+	sessions        SessionStorer
 	searcher        CustomerSearcher
 	productSearcher ProductSearcher
 }
@@ -357,7 +357,7 @@ func (t *addToDraftTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 // --- update_draft_item ---
 
 type updateDraftItemTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 }
 
 func (t *updateDraftItemTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -427,7 +427,7 @@ func (t *updateDraftItemTool) InvokableRun(ctx context.Context, argumentsInJSON 
 // --- clear_draft ---
 
 type clearDraftTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 }
 
 func (t *clearDraftTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -448,7 +448,7 @@ func (t *clearDraftTool) InvokableRun(ctx context.Context, _ string, _ ...tool.O
 // --- remove_draft_item ---
 
 type removeDraftItemTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 }
 
 func (t *removeDraftItemTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -486,7 +486,7 @@ func (t *removeDraftItemTool) InvokableRun(ctx context.Context, argumentsInJSON 
 // --- confirm_draft ---
 
 type confirmDraftTool struct {
-	sessions        *SessionStore
+	sessions        SessionStorer
 	writer          LedgerWriter
 	searcher        CustomerSearcher
 	productSearcher ProductSearcher
@@ -563,7 +563,7 @@ func (t *confirmDraftTool) InvokableRun(ctx context.Context, _ string, _ ...tool
 // --- query_entries ---
 
 type queryEntriesTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	querier  LedgerQuerier
 }
 
@@ -632,7 +632,7 @@ func (t *queryEntriesTool) InvokableRun(ctx context.Context, argumentsInJSON str
 // --- update_entry ---
 
 type updateEntryTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	writer   LedgerWriter
 }
 
@@ -712,7 +712,7 @@ func (t *updateEntryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 // --- delete_entry ---
 
 type deleteEntryTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	writer   LedgerWriter
 }
 
@@ -750,7 +750,7 @@ func (t *deleteEntryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 // --- settle_account ---
 
 type settleAccountTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	querier  LedgerQuerier
 	writer   LedgerWriter
 }
@@ -789,7 +789,7 @@ func (t *settleAccountTool) InvokableRun(ctx context.Context, argumentsInJSON st
 // --- calculate_summary ---
 
 type calculateSummaryTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	querier  LedgerQuerier
 	payments PaymentRecorder
 }
@@ -841,7 +841,7 @@ func (t *calculateSummaryTool) InvokableRun(ctx context.Context, argumentsInJSON
 // --- record_payment ---
 
 type recordPaymentTool struct {
-	sessions *SessionStore
+	sessions SessionStorer
 	searcher CustomerSearcher
 	payments PaymentRecorder
 }

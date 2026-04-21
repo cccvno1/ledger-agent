@@ -40,7 +40,7 @@ const systemPromptTemplate = `你是一个小批发商的智能记账助手。
 
 // dynamicModifier returns a MessageModifier that injects current time and
 // structured session state (draft, operation log, stats) into the system prompt.
-func dynamicModifier(sessions *SessionStore) react.MessageModifier {
+func dynamicModifier(sessions SessionStorer) react.MessageModifier {
 	return func(ctx context.Context, input []*schema.Message) []*schema.Message {
 		now := time.Now().Format("2006-01-02 (Monday) 15:04 CST")
 		prompt := fmt.Sprintf(systemPromptTemplate, now)
@@ -63,7 +63,7 @@ func dynamicModifier(sessions *SessionStore) react.MessageModifier {
 }
 
 // buildAgent creates a react Agent with the given tools.
-func buildAgent(ctx context.Context, cfg conf.MiniMax, sessions *SessionStore, tools []tool.BaseTool) (*react.Agent, error) {
+func buildAgent(ctx context.Context, cfg conf.MiniMax, sessions SessionStorer, tools []tool.BaseTool) (*react.Agent, error) {
 	apiKey := os.Getenv("MINIMAX_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("chat: agent: MINIMAX_API_KEY is not set")

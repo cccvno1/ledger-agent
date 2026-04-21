@@ -260,6 +260,45 @@ func (s *Service) SummaryByCustomer(ctx context.Context, customerID string) ([]*
 	return summaries, nil
 }
 
+// DashboardOutput holds aggregate metrics for the management dashboard.
+type DashboardOutput struct {
+	TotalPending     float64 `json:"total_pending"`
+	TotalCustomers   int     `json:"total_customers"`
+	EntriesThisMonth int     `json:"entries_this_month"`
+	AmountThisMonth  float64 `json:"amount_this_month"`
+}
+
+// Dashboard returns aggregated metrics. It queries both entries and payments tables directly.
+func (s *Service) Dashboard(ctx context.Context) (*DashboardOutput, error) {
+	now := time.Now().UTC()
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	var out DashboardOutput
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(amount), 0),
+			COUNT(DISTINCT customer_id),
+			COUNT(CASE WHEN entry_date >= $1 THEN 1 END),
+			COALESCE(SUM(CASE WHEN entry_date >= $1 THEN amount ELSE 0 END), 0)
+		FROM entries`, firstOfMonth)
+	if err := row.Scan(&out.TotalPending, &out.TotalCustomers, &out.EntriesThisMonth, &out.AmountThisMonth); err != nil {
+		return nil, fmt.Errorf("ledger: dashboard: entries: %w", err)
+	}
+
+	// Subtract payments from pending (payments apply against unsettled balance).
+	var totalPaid float64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM payments`).Scan(&totalPaid); err != nil {
+		return nil, fmt.Errorf("ledger: dashboard: payments: %w", err)
+	}
+	out.TotalPending -= totalPaid
+	if out.TotalPending < 0 {
+		out.TotalPending = 0
+	}
+
+	return &out, nil
+}
+
 // DeleteInput carries the ID of the entry to delete.
 type DeleteInput struct {
 	ID string
