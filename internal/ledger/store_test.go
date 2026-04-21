@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cccvno1/goplate/pkg/testkit"
+	"github.com/cccvno1/ledger-agent/testutil"
 	"github.com/google/uuid"
 )
 
@@ -27,7 +27,7 @@ func newTestEntry(customerID string) *Entry {
 }
 
 func TestStore_CreateAndGetByID(t *testing.T) {
-	db := testkit.PG(t)
+	db := testutil.Postgres(t)
 	store := NewStore(db)
 
 	// Ensure customer exists.
@@ -67,7 +67,7 @@ func TestStore_CreateAndGetByID(t *testing.T) {
 }
 
 func TestStore_MarkSettled(t *testing.T) {
-	db := testkit.PG(t)
+	db := testutil.Postgres(t)
 	store := NewStore(db)
 
 	custID := uuid.NewString()

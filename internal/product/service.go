@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cccvno1/goplate/pkg/errkit"
 	"github.com/cccvno1/ledger-agent/internal/domain"
 	"github.com/google/uuid"
 )
@@ -147,8 +148,23 @@ func (s *Service) ListAll(ctx context.Context) ([]*Product, error) {
 	return products, nil
 }
 
+// AddAliasInput carries the alias addition request.
+type AddAliasInput struct {
+	ProductID string
+	Alias     string
+}
+
 // AddAlias appends an alias to a product.
-func (s *Service) AddAlias(ctx context.Context, productID, alias string) error {
+func (s *Service) AddAlias(ctx context.Context, in AddAliasInput) error {
+	productID := strings.TrimSpace(in.ProductID)
+	alias := strings.TrimSpace(in.Alias)
+	if productID == "" {
+		return errkit.New(errkit.InvalidInput, "product_id is required")
+	}
+	if alias == "" {
+		return errkit.New(errkit.InvalidInput, "alias is required")
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("product: add alias: begin tx: %w", err)

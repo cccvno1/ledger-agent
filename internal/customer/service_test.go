@@ -1,8 +1,10 @@
 package customer
 
 import (
+	"context"
 	"testing"
 
+	"github.com/cccvno1/goplate/pkg/errkit"
 	"github.com/cccvno1/ledger-agent/internal/domain"
 )
 
@@ -42,5 +44,29 @@ func TestSearch_Ranking(t *testing.T) {
 			t.Errorf("results not sorted: index %d score %d < index %d score %d",
 				i, results[i].Score, i-1, results[i-1].Score)
 		}
+	}
+}
+
+func TestAddAlias_InvalidInput(t *testing.T) {
+	svc := &Service{}
+
+	tests := []struct {
+		name string
+		in   AddAliasInput
+	}{
+		{name: "missing customer id", in: AddAliasInput{Alias: "老张"}},
+		{name: "missing alias", in: AddAliasInput{CustomerID: "cust-1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := svc.AddAlias(context.Background(), tt.in)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if e := errkit.AsError(err); e == nil || e.Code != errkit.InvalidInput {
+				t.Fatalf("expected invalid input error, got %v", err)
+			}
+		})
 	}
 }

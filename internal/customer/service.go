@@ -152,8 +152,23 @@ func (s *Service) Search(ctx context.Context, in SearchInput) ([]*SearchResult, 
 	return results, nil
 }
 
+// AddAliasInput carries the alias addition request.
+type AddAliasInput struct {
+	CustomerID string
+	Alias      string
+}
+
 // AddAlias appends an alias to a customer.
-func (s *Service) AddAlias(ctx context.Context, customerID, alias string) error {
+func (s *Service) AddAlias(ctx context.Context, in AddAliasInput) error {
+	customerID := strings.TrimSpace(in.CustomerID)
+	alias := strings.TrimSpace(in.Alias)
+	if customerID == "" {
+		return errkit.New(errkit.InvalidInput, "customer_id is required")
+	}
+	if alias == "" {
+		return errkit.New(errkit.InvalidInput, "alias is required")
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("customer: add alias: begin tx: %w", err)

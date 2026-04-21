@@ -23,8 +23,12 @@ func (s *Store) Create(ctx context.Context, tx *sql.Tx, p *Product) error {
 	const q = `
 		INSERT INTO products (id, name, aliases, default_unit, reference_price, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	aliases := p.Aliases
+	if aliases == nil {
+		aliases = []string{}
+	}
 	_, err := tx.ExecContext(ctx, q,
-		p.ID, p.Name, pq.Array(p.Aliases), p.DefaultUnit, nilIfZero(p.ReferencePrice),
+		p.ID, p.Name, pq.Array(aliases), p.DefaultUnit, nilIfZero(p.ReferencePrice),
 		p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {

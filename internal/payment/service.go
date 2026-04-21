@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/cccvno1/goplate/pkg/errkit"
 	"github.com/google/uuid"
 )
 
@@ -30,9 +32,20 @@ type CreateInput struct {
 
 // Create records a new payment.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Payment, error) {
+	customerID := strings.TrimSpace(in.CustomerID)
+	if customerID == "" {
+		return nil, errkit.New(errkit.InvalidInput, "customer_id is required")
+	}
+	if in.Amount <= 0 {
+		return nil, errkit.New(errkit.InvalidInput, "amount must be greater than 0")
+	}
+	if in.PaymentDate.IsZero() {
+		return nil, errkit.New(errkit.InvalidInput, "payment_date is required")
+	}
+
 	p := &Payment{
 		ID:          uuid.NewString(),
-		CustomerID:  in.CustomerID,
+		CustomerID:  customerID,
 		Amount:      in.Amount,
 		PaymentDate: in.PaymentDate,
 		Notes:       in.Notes,

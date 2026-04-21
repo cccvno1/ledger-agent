@@ -123,8 +123,11 @@ func (a *customerAdapter) Create(ctx context.Context, name string) (chat.Custome
 	return chat.CustomerRef{ID: c.ID, Name: c.Name}, nil
 }
 
-func (a *customerAdapter) AddAlias(ctx context.Context, customerID string, alias string) error {
-	return a.svc.AddAlias(ctx, customerID, alias)
+func (a *customerAdapter) AddAlias(ctx context.Context, in chat.CustomerAliasInput) error {
+	return a.svc.AddAlias(ctx, customer.AddAliasInput{
+		CustomerID: in.CustomerID,
+		Alias:      in.Alias,
+	})
 }
 
 // ledgerAdapter adapts ledger.Service to chat.LedgerWriter and chat.LedgerQuerier.
@@ -249,8 +252,11 @@ func (a *productAdapter) FindOrCreate(ctx context.Context, name string) (chat.Pr
 	return chat.ProductRef{ID: p.ID, Name: p.Name, DefaultUnit: p.DefaultUnit, ReferencePrice: p.ReferencePrice}, nil
 }
 
-func (a *productAdapter) AddAlias(ctx context.Context, productID string, alias string) error {
-	return a.svc.AddAlias(ctx, productID, alias)
+func (a *productAdapter) AddAlias(ctx context.Context, in chat.ProductAliasInput) error {
+	return a.svc.AddAlias(ctx, product.AddAliasInput{
+		ProductID: in.ProductID,
+		Alias:     in.Alias,
+	})
 }
 
 // paymentAdapter adapts payment.Service to chat.PaymentRecorder.

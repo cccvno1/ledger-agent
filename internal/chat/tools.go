@@ -20,7 +20,7 @@ type CustomerSearcher interface {
 	// Create finds or creates a customer by name and returns its ID and name.
 	Create(ctx context.Context, name string) (CustomerRef, error)
 	// AddAlias appends an alias to a customer.
-	AddAlias(ctx context.Context, customerID, alias string) error
+	AddAlias(ctx context.Context, in CustomerAliasInput) error
 }
 
 // LedgerWriter is satisfied by an adapter wrapping ledger.Service.
@@ -47,7 +47,7 @@ type LedgerQuerier interface {
 type ProductSearcher interface {
 	Search(ctx context.Context, query string, topN int) ([]ProductMatch, error)
 	FindOrCreate(ctx context.Context, name string) (ProductRef, error)
-	AddAlias(ctx context.Context, productID, alias string) error
+	AddAlias(ctx context.Context, in ProductAliasInput) error
 }
 
 // PaymentRecorder is satisfied by an adapter wrapping payment.Service.
@@ -72,6 +72,12 @@ type CustomerRef struct {
 	Name string `json:"name"`
 }
 
+// CustomerAliasInput carries alias data for a customer.
+type CustomerAliasInput struct {
+	CustomerID string
+	Alias      string
+}
+
 // ProductMatch is a product fuzzy-search result.
 type ProductMatch struct {
 	ID             string  `json:"id"`
@@ -88,6 +94,12 @@ type ProductRef struct {
 	Name           string  `json:"name"`
 	DefaultUnit    string  `json:"default_unit"`
 	ReferencePrice float64 `json:"reference_price,omitempty"`
+}
+
+// ProductAliasInput carries alias data for a product.
+type ProductAliasInput struct {
+	ProductID string
+	Alias     string
 }
 
 // PaymentCreateInput carries fields for recording a payment.

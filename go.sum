@@ -37,8 +37,6 @@ github.com/cccvno1/goplate/pkg/logkit v0.1.0 h1:6J+FrM6lDEIadz3FdT+kHM98RwiLJZnR
 github.com/cccvno1/goplate/pkg/logkit v0.1.0/go.mod h1:+FypBM5yBD0d74GNl4GghLgyT31B6WWjBWeKT75e+kk=
 github.com/cccvno1/goplate/pkg/reqctx v0.1.0 h1:BJlSevQqD0ag+zxjXhpWw+w7jabCxi0Q8eH/iNulmRs=
 github.com/cccvno1/goplate/pkg/reqctx v0.1.0/go.mod h1:KxrOsFYiB+tVhWAYVZC51ULv3j8LWZWgoOUnVxGsgBs=
-github.com/cccvno1/goplate/pkg/testkit v0.1.0 h1:jtTHnlWKftvVhc5dO11K0ua/kTMo8NEOM5QsKGxbv7M=
-github.com/cccvno1/goplate/pkg/testkit v0.1.0/go.mod h1:06Uog4wGP9WOp/Md7WGjbV4pz4l9pKBTR/RVrQJMks0=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/certifi/gocertifi v0.0.0-20190105021004-abcd57078448/go.mod h1:GJKEexRPVJrBSOjoqN5VNOIKJ5Q3RViH6eu3puDRwx4=

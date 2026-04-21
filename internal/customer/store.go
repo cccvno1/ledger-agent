@@ -21,7 +21,11 @@ func NewStore(db *sql.DB) *Store {
 // Create inserts a new customer row. Uses tx for transactional writes.
 func (s *Store) Create(ctx context.Context, tx *sql.Tx, c *Customer) error {
 	const q = `INSERT INTO customers (id, name, aliases, created_at) VALUES ($1, $2, $3, $4)`
-	_, err := tx.ExecContext(ctx, q, c.ID, c.Name, pq.Array(c.Aliases), c.CreatedAt)
+	aliases := c.Aliases
+	if aliases == nil {
+		aliases = []string{}
+	}
+	_, err := tx.ExecContext(ctx, q, c.ID, c.Name, pq.Array(aliases), c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("customer store: create: %w", err)
 	}

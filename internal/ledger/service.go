@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/cccvno1/goplate/pkg/errkit"
 	"github.com/cccvno1/ledger-agent/internal/domain"
 	"github.com/google/uuid"
 )
@@ -35,16 +37,38 @@ type CreateInput struct {
 
 // Create inserts a new ledger entry.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Entry, error) {
+	customerID := strings.TrimSpace(in.CustomerID)
+	customerName := strings.TrimSpace(in.CustomerName)
+	productName := strings.TrimSpace(in.ProductName)
+	if customerID == "" {
+		return nil, errkit.New(errkit.InvalidInput, "customer_id is required")
+	}
+	if customerName == "" {
+		return nil, errkit.New(errkit.InvalidInput, "customer_name is required")
+	}
+	if productName == "" {
+		return nil, errkit.New(errkit.InvalidInput, "product_name is required")
+	}
+	if in.UnitPrice <= 0 {
+		return nil, errkit.New(errkit.InvalidInput, "unit_price must be greater than 0")
+	}
+	if in.Quantity <= 0 {
+		return nil, errkit.New(errkit.InvalidInput, "quantity must be greater than 0")
+	}
+	if in.EntryDate.IsZero() {
+		return nil, errkit.New(errkit.InvalidInput, "entry_date is required")
+	}
+
 	now := time.Now().UTC()
-	unit := in.Unit
+	unit := strings.TrimSpace(in.Unit)
 	if unit == "" {
 		unit = "个"
 	}
 	e := &Entry{
 		ID:           uuid.NewString(),
-		CustomerID:   in.CustomerID,
-		CustomerName: in.CustomerName,
-		ProductName:  in.ProductName,
+		CustomerID:   customerID,
+		CustomerName: customerName,
+		ProductName:  productName,
 		UnitPrice:    in.UnitPrice,
 		Quantity:     in.Quantity,
 		Unit:         unit,
@@ -114,6 +138,51 @@ type UpdateInput struct {
 
 // Update modifies an existing entry.
 func (s *Service) Update(ctx context.Context, in UpdateInput) (*Entry, error) {
+	if strings.TrimSpace(in.ID) == "" {
+		return nil, errkit.New(errkit.InvalidInput, "id is required")
+	}
+
+	hasChanges := false
+	if in.CustomerName != "" {
+		if strings.TrimSpace(in.CustomerName) == "" {
+			return nil, errkit.New(errkit.InvalidInput, "customer_name must not be blank")
+		}
+		hasChanges = true
+	}
+	if in.ProductName != "" {
+		if strings.TrimSpace(in.ProductName) == "" {
+			return nil, errkit.New(errkit.InvalidInput, "product_name must not be blank")
+		}
+		hasChanges = true
+	}
+	if in.UnitPrice != 0 {
+		if in.UnitPrice <= 0 {
+			return nil, errkit.New(errkit.InvalidInput, "unit_price must be greater than 0")
+		}
+		hasChanges = true
+	}
+	if in.Quantity != 0 {
+		if in.Quantity <= 0 {
+			return nil, errkit.New(errkit.InvalidInput, "quantity must be greater than 0")
+		}
+		hasChanges = true
+	}
+	if in.Unit != "" {
+		if strings.TrimSpace(in.Unit) == "" {
+			return nil, errkit.New(errkit.InvalidInput, "unit must not be blank")
+		}
+		hasChanges = true
+	}
+	if !in.EntryDate.IsZero() {
+		hasChanges = true
+	}
+	if in.Notes != "" {
+		hasChanges = true
+	}
+	if !hasChanges {
+		return nil, errkit.New(errkit.InvalidInput, "at least one field must be updated")
+	}
+
 	e, err := s.store.GetByID(ctx, in.ID)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: update: fetch: %w", err)
@@ -123,10 +192,10 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*Entry, error) {
 	}
 
 	if in.CustomerName != "" {
-		e.CustomerName = in.CustomerName
+		e.CustomerName = strings.TrimSpace(in.CustomerName)
 	}
 	if in.ProductName != "" {
-		e.ProductName = in.ProductName
+		e.ProductName = strings.TrimSpace(in.ProductName)
 	}
 	if in.UnitPrice > 0 {
 		e.UnitPrice = in.UnitPrice
@@ -135,7 +204,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*Entry, error) {
 		e.Quantity = in.Quantity
 	}
 	if in.Unit != "" {
-		e.Unit = in.Unit
+		e.Unit = strings.TrimSpace(in.Unit)
 	}
 	if !in.EntryDate.IsZero() {
 		e.EntryDate = in.EntryDate
@@ -163,8 +232,9 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*Entry, error) {
 
 // SettleByCustomer marks all unsettled entries for a customer as settled.
 func (s *Service) SettleByCustomer(ctx context.Context, customerID string) error {
+	customerID = strings.TrimSpace(customerID)
 	if customerID == "" {
-		return fmt.Errorf("ledger: settle: customer_id is required")
+		return errkit.New(errkit.InvalidInput, "customer_id is required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

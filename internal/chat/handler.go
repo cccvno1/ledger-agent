@@ -1,18 +1,23 @@
 package chat
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/cccvno1/goplate/pkg/httpkit"
 )
 
+type chatService interface {
+	Chat(ctx context.Context, in ChatInput) (*ChatOutput, error)
+}
+
 // Handler handles HTTP requests for the chat feature.
 type Handler struct {
-	svc *Service
+	svc chatService
 }
 
 // NewHandler creates a Handler.
-func NewHandler(svc *Service) *Handler {
+func NewHandler(svc chatService) *Handler {
 	return &Handler{svc: svc}
 }
 
@@ -23,23 +28,16 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		httpkit.Error(w, err)
 		return
 	}
-	if req.Message == "" {
-		httpkit.Error(w, errMissingMessage)
+	if err := req.Validate(); err != nil {
+		httpkit.Error(w, err)
 		return
 	}
 
-	out, err := h.svc.Chat(r.Context(), ChatInput{
-		SessionID: req.SessionID,
-		Message:   req.Message,
-	})
+	out, err := h.svc.Chat(r.Context(), req.ToInput())
 	if err != nil {
 		httpkit.Error(w, err)
 		return
 	}
 
-	httpkit.JSON(w, http.StatusOK, ChatResponse{
-		SessionID: out.SessionID,
-		Reply:     out.Reply,
-		Draft:     out.Draft,
-	})
+	httpkit.JSON(w, http.StatusOK, NewChatResponse(out))
 }

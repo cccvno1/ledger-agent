@@ -9,12 +9,12 @@ require (
 	github.com/cccvno1/goplate/pkg/errkit v0.1.0
 	github.com/cccvno1/goplate/pkg/httpkit v0.1.1
 	github.com/cccvno1/goplate/pkg/logkit v0.1.0
-	github.com/cccvno1/goplate/pkg/testkit v0.1.0
 	github.com/cloudwego/eino v0.8.11
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
 	github.com/mdp/qrterminal/v3 v3.2.1
+	github.com/testcontainers/testcontainers-go v0.42.0
 )
 
 require (
@@ -78,7 +78,6 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

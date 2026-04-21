@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cccvno1/goplate/pkg/testkit"
+	"github.com/cccvno1/ledger-agent/testutil"
 	"github.com/google/uuid"
 )
 
 func TestStore_CreateAndGetByID(t *testing.T) {
-	db := testkit.PG(t)
+	db := testutil.Postgres(t)
 	store := NewStore(db)
 
 	tx, err := db.BeginTx(context.Background(), nil)
@@ -44,7 +44,7 @@ func TestStore_CreateAndGetByID(t *testing.T) {
 }
 
 func TestStore_ListAll(t *testing.T) {
-	db := testkit.PG(t)
+	db := testutil.Postgres(t)
 	store := NewStore(db)
 
 	customers, err := store.ListAll(context.Background())
