@@ -18,23 +18,52 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// Create inserts a new entry row.
-func (s *Store) Create(ctx context.Context, tx *sql.Tx, e *Entry) error {
+// Create inserts a new entry row. If e.IdempotencyKey is set and a row with
+// the same key already exists, no insert happens and the existing row's id
+// is returned via e.ID. The boolean return indicates whether a new row was
+// actually inserted (false = idempotent hit).
+func (s *Store) Create(ctx context.Context, tx *sql.Tx, e *Entry) (bool, error) {
+	if e.IdempotencyKey == "" {
+		const q = `
+			INSERT INTO entries
+				(id, customer_id, customer_name, product_name, unit_price, quantity, unit, amount,
+				 entry_date, is_settled, settled_at, notes, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+		_, err := tx.ExecContext(ctx, q,
+			e.ID, e.CustomerID, e.CustomerName, e.ProductName,
+			e.UnitPrice, e.Quantity, e.Unit, e.Amount,
+			e.EntryDate.Format("2006-01-02"), e.IsSettled, e.SettledAt,
+			e.Notes, e.CreatedAt, e.UpdatedAt,
+		)
+		if err != nil {
+			return false, fmt.Errorf("ledger store: create: %w", err)
+		}
+		return true, nil
+	}
+
+	// Idempotent path: ON CONFLICT touches the row to make RETURNING fire so
+	// we always get back the surviving id (whether new or pre-existing).
 	const q = `
 		INSERT INTO entries
 			(id, customer_id, customer_name, product_name, unit_price, quantity, unit, amount,
-			 entry_date, is_settled, settled_at, notes, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
-	_, err := tx.ExecContext(ctx, q,
+			 entry_date, is_settled, settled_at, notes, created_at, updated_at, idempotency_key)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = entries.idempotency_key
+		RETURNING id, (xmax = 0) AS inserted`
+	var (
+		id       string
+		inserted bool
+	)
+	if err := tx.QueryRowContext(ctx, q,
 		e.ID, e.CustomerID, e.CustomerName, e.ProductName,
 		e.UnitPrice, e.Quantity, e.Unit, e.Amount,
 		e.EntryDate.Format("2006-01-02"), e.IsSettled, e.SettledAt,
-		e.Notes, e.CreatedAt, e.UpdatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("ledger store: create: %w", err)
+		e.Notes, e.CreatedAt, e.UpdatedAt, e.IdempotencyKey,
+	).Scan(&id, &inserted); err != nil {
+		return false, fmt.Errorf("ledger store: create idempotent: %w", err)
 	}
-	return nil
+	e.ID = id
+	return inserted, nil
 }
 
 // GetByID returns the entry with the given ID, or nil if not found.

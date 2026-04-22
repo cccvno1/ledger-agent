@@ -3,8 +3,10 @@ package chat
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
@@ -22,17 +24,40 @@ func sessionIDFromCtx(ctx context.Context) string {
 	return ""
 }
 
+// lockedSession acquires the per-id mutex on the store, loads or creates the
+// session, and returns the live *Session together with an unlock func that
+// callers must defer. All tool handlers that perform a load \u2192 mutate \u2192 save
+// sequence MUST wrap their body with this helper, so that parallel tool calls
+// inside a single ReAct iteration cannot clobber each other's writes (each
+// goroutine reads a fresh copy from the DB-backed store; without serialisation
+// the last writer wins).
+func lockedSession(ctx context.Context, store SessionStorer) (*Session, func()) {
+	sid := sessionIDFromCtx(ctx)
+	mu := store.LockFor(sid)
+	mu.Lock()
+	return store.GetOrCreate(sid), mu.Unlock
+}
+
 // Service orchestrates multi-turn chat with the agent.
 type Service struct {
 	sessions           SessionStorer
 	agent              *react.Agent
+	registry           *Registry
 	maxHistoryMessages int
+	chatTimeout        time.Duration
 }
 
 // NewService creates a Service and builds the underlying agent.
-func NewService(ctx context.Context, cfg conf.MiniMax, sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
-	tools := buildTools(sessions, searcher, writer, querier, products, payments)
-	agent, err := buildAgent(ctx, cfg, sessions, tools)
+func NewService(ctx context.Context, logger *slog.Logger, cfg conf.MiniMax, sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	registry := buildRegistry(logger, sessions, searcher, writer, querier, products, payments)
+	einoTools, err := registry.BuildEinoTools()
+	if err != nil {
+		return nil, fmt.Errorf("chat: new service: %w", err)
+	}
+	agent, err := buildAgent(ctx, cfg, sessions, einoTools)
 	if err != nil {
 		return nil, fmt.Errorf("chat: new service: %w", err)
 	}
@@ -40,10 +65,16 @@ func NewService(ctx context.Context, cfg conf.MiniMax, sessions SessionStorer, s
 	if maxHist <= 0 {
 		maxHist = 50
 	}
+	chatTimeout := time.Duration(cfg.ChatTimeoutSeconds) * time.Second
+	if chatTimeout <= 0 {
+		chatTimeout = 60 * time.Second
+	}
 	return &Service{
 		sessions:           sessions,
 		agent:              agent,
+		registry:           registry,
 		maxHistoryMessages: maxHist,
+		chatTimeout:        chatTimeout,
 	}, nil
 }
 
@@ -66,13 +97,30 @@ func (s *Service) Chat(ctx context.Context, in ChatInput) (*ChatOutput, error) {
 		in.SessionID = uuid.NewString()
 	}
 
-	ctx = context.WithValue(ctx, sessionIDKey{}, in.SessionID)
-	sess := s.sessions.GetOrCreate(in.SessionID)
+	// Cap the entire generate cycle so a stalled LLM/tool can never block a
+	// caller indefinitely. Per-tool timeouts inside the Registry are stricter
+	// budgets carved out of this envelope.
+	ctx, cancel := context.WithTimeout(ctx, s.chatTimeout)
+	defer cancel()
 
-	// Lock the session for the entire generate cycle to prevent concurrent
-	// mutations from rapid messages by the same user.
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
+	ctx = context.WithValue(ctx, sessionIDKey{}, in.SessionID)
+
+	// Hold the per-id store mutex for the entire turn. This serialises
+	// concurrent HTTP/WeChat turns for the same session_id at the Service
+	// boundary AND prevents tool handlers (which acquire the same mutex via
+	// lockedSession) from re-entering it. We acquire here, do all reads and
+	// the agent Generate (which spawns tool calls in goroutines that try to
+	// re-lock — see note below), then release after persistence.
+	//
+	// IMPORTANT: tool handlers must NOT call lockedSession themselves while
+	// this lock is held, otherwise they deadlock. Instead, we release the
+	// turn-lock for the duration of Generate() so each tool invocation can
+	// briefly acquire+release it around its own load\u2192mutate\u2192save sequence,
+	// then re-acquire it for the final Messages write.
+	turnLock := s.sessions.LockFor(in.SessionID)
+	turnLock.Lock()
+	sess := s.sessions.GetOrCreate(in.SessionID)
+	turnLock.Unlock()
 
 	userMsg := schema.UserMessage(in.Message)
 
@@ -108,19 +156,26 @@ func (s *Service) Chat(ctx context.Context, in ChatInput) (*ChatOutput, error) {
 		intermediate = append(intermediate, msg)
 	}
 
-	// Persist full history (not the windowed version).
-	newMsgs := make([]*schema.Message, 0, len(sess.Messages)+1+len(intermediate)+1)
-	newMsgs = append(newMsgs, sess.Messages...)
+	// Persist full history (not the windowed version). Tools have already
+	// committed their Draft / Phase / OpLog mutations atomically via
+	// lockedSession; we re-acquire the turn-lock here, reload, and write
+	// once more to attach the assistant turn's messages without clobbering
+	// any tool-side state.
+	turnLock.Lock()
+	defer turnLock.Unlock()
+	final := s.sessions.GetOrCreate(in.SessionID)
+	newMsgs := make([]*schema.Message, 0, len(final.Messages)+1+len(intermediate)+1)
+	newMsgs = append(newMsgs, final.Messages...)
 	newMsgs = append(newMsgs, userMsg)
 	newMsgs = append(newMsgs, intermediate...)
 	newMsgs = append(newMsgs, reply)
-	sess.Messages = newMsgs
-	s.sessions.Set(sess)
+	final.Messages = newMsgs
+	s.sessions.Set(final)
 
 	return &ChatOutput{
 		SessionID: in.SessionID,
 		Reply:     reply.Content,
-		Draft:     sess.Draft,
+		Draft:     final.Draft,
 	}, nil
 }
 

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 )
 
 // CustomerSearcher is satisfied by an adapter wrapping customer.Service.
@@ -41,6 +43,9 @@ type LedgerQuerier interface {
 	List(ctx context.Context, in LedgerListInput) ([]LedgerEntryRef, error)
 	// SummaryByCustomer returns outstanding totals.
 	SummaryByCustomer(ctx context.Context, customerID string) ([]LedgerSummaryRef, error)
+	// GetByID returns a single entry; required by propose_delete_entry to
+	// build a human-readable preview.
+	GetByID(ctx context.Context, id string) (LedgerEntryRef, error)
 }
 
 // ProductSearcher is satisfied by an adapter wrapping product.Service.
@@ -48,12 +53,17 @@ type ProductSearcher interface {
 	Search(ctx context.Context, query string, topN int) ([]ProductMatch, error)
 	FindOrCreate(ctx context.Context, name string) (ProductRef, error)
 	AddAlias(ctx context.Context, in ProductAliasInput) error
+	// ListAll returns the catalogue. Order is service-defined (typically by
+	// usage / name).
+	ListAll(ctx context.Context) ([]ProductRef, error)
 }
 
 // PaymentRecorder is satisfied by an adapter wrapping payment.Service.
 type PaymentRecorder interface {
 	Create(ctx context.Context, in PaymentCreateInput) (PaymentRef, error)
 	TotalByCustomer(ctx context.Context, customerID string) (float64, error)
+	// ListByCustomer returns all payments for a customer, newest first.
+	ListByCustomer(ctx context.Context, customerID string) ([]PaymentRef, error)
 }
 
 // --- Shared DTO types for the cross-feature boundary ---
@@ -127,6 +137,8 @@ type LedgerCreateInput struct {
 	Unit         string
 	EntryDate    time.Time
 	Notes        string
+	// IdempotencyKey, when set, makes this Create safe to retry.
+	IdempotencyKey string
 }
 
 // LedgerUpdateInput carries mutable fields for an existing entry.
@@ -175,23 +187,31 @@ type LedgerSummaryRef struct {
 
 // --- Tool builders ---
 
-// buildTools constructs all agent tools.
-func buildTools(sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) []tool.BaseTool {
-	return []tool.BaseTool{
-		&searchCustomerTool{sessions: sessions, searcher: searcher},
-		&listCustomersTool{sessions: sessions, searcher: searcher},
-		&addToDraftTool{sessions: sessions, searcher: searcher, productSearcher: products},
-		&updateDraftItemTool{sessions: sessions},
-		&removeDraftItemTool{sessions: sessions},
-		&clearDraftTool{sessions: sessions},
-		&confirmDraftTool{sessions: sessions, writer: writer, searcher: searcher, productSearcher: products},
-		&queryEntriesTool{sessions: sessions, querier: querier},
-		&updateEntryTool{sessions: sessions, writer: writer},
-		&deleteEntryTool{sessions: sessions, writer: writer},
-		&settleAccountTool{sessions: sessions, querier: querier, writer: writer},
-		&calculateSummaryTool{sessions: sessions, querier: querier, payments: payments},
-		&recordPaymentTool{sessions: sessions, searcher: searcher, payments: payments},
-	}
+// buildRegistry constructs the agent's tool Registry. The Registry owns
+// cross-cutting concerns (timeout, panic recovery, error normalisation,
+// audit log) so individual tools can stay focused on business logic.
+func buildRegistry(logger *slog.Logger, sessions SessionStorer, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) *Registry {
+	r := NewRegistry(logger).WithSessions(sessions)
+	tokens := NewTokenStore()
+	r.Register(&searchCustomerTool{sessions: sessions, searcher: searcher})
+	r.Register(&listCustomersTool{sessions: sessions, searcher: searcher})
+	r.Register(&addToDraftTool{sessions: sessions, searcher: searcher, productSearcher: products})
+	r.Register(&updateDraftItemTool{sessions: sessions})
+	r.Register(&removeDraftItemTool{sessions: sessions})
+	r.Register(&clearDraftTool{sessions: sessions})
+	r.Register(&confirmDraftTool{sessions: sessions, writer: writer, searcher: searcher, productSearcher: products})
+	r.Register(&queryEntriesTool{sessions: sessions, querier: querier})
+	r.Register(&updateEntryTool{sessions: sessions, writer: writer})
+	r.Register(&proposeDeleteEntryTool{sessions: sessions, querier: querier, tokens: tokens})
+	r.Register(&proposeSettleAccountTool{sessions: sessions, querier: querier, tokens: tokens})
+	r.Register(&commitOperationTool{sessions: sessions, writer: writer, tokens: tokens})
+	r.Register(&calculateSummaryTool{sessions: sessions, querier: querier, payments: payments})
+	r.Register(&recordPaymentTool{sessions: sessions, searcher: searcher, payments: payments})
+	r.Register(&listProductsTool{products: products})
+	r.Register(&listPaymentsTool{sessions: sessions, searcher: searcher, payments: payments})
+	r.Register(&addCustomerAliasTool{searcher: searcher})
+	r.Register(&addProductAliasTool{products: products})
+	return r
 }
 
 // --- search_customer ---
@@ -331,19 +351,22 @@ func (t *addToDraftTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	amount := p.UnitPrice * p.Quantity
 
 	// 5. Add to draft
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	sess.Draft = append(sess.Draft, DraftEntry{
-		CustomerID:   customerID,
-		CustomerName: customerName,
-		ProductID:    productID,
-		ProductName:  productName,
-		UnitPrice:    p.UnitPrice,
-		Quantity:     p.Quantity,
-		Unit:         unit,
-		Amount:       amount,
-		EntryDate:    entryDate,
-		Notes:        p.Notes,
+		CustomerID:     customerID,
+		CustomerName:   customerName,
+		ProductID:      productID,
+		ProductName:    productName,
+		UnitPrice:      p.UnitPrice,
+		Quantity:       p.Quantity,
+		Unit:           unit,
+		Amount:         amount,
+		EntryDate:      entryDate,
+		Notes:          p.Notes,
+		IdempotencyKey: uuid.NewString(),
 	})
+	sess.SetPhase(PhaseDrafting)
 	t.sessions.Set(sess)
 
 	return mustJSON(map[string]any{
@@ -390,7 +413,8 @@ func (t *updateDraftItemTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("update_draft_item: parse args: %w", err)
 	}
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	if p.Index < 0 || p.Index >= len(sess.Draft) {
 		return "", fmt.Errorf("update_draft_item: index %d out of range (draft has %d items)", p.Index, len(sess.Draft))
 	}
@@ -439,8 +463,10 @@ func (t *clearDraftTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *clearDraftTool) InvokableRun(ctx context.Context, _ string, _ ...tool.Option) (string, error) {
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	sess.Draft = nil
+	sess.SetPhase(PhaseIdle)
 	t.sessions.Set(sess)
 	return `{"message":"草稿已清空"}`, nil
 }
@@ -469,12 +495,16 @@ func (t *removeDraftItemTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("remove_draft_item: parse args: %w", err)
 	}
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	if p.Index < 0 || p.Index >= len(sess.Draft) {
 		return "", fmt.Errorf("remove_draft_item: index %d out of range (draft has %d items)", p.Index, len(sess.Draft))
 	}
 
 	sess.Draft = append(sess.Draft[:p.Index], sess.Draft[p.Index+1:]...)
+	if len(sess.Draft) == 0 {
+		sess.SetPhase(PhaseIdle)
+	}
 	t.sessions.Set(sess)
 
 	return mustJSON(map[string]any{
@@ -501,32 +531,51 @@ func (t *confirmDraftTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *confirmDraftTool) InvokableRun(ctx context.Context, _ string, _ ...tool.Option) (string, error) {
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	if len(sess.Draft) == 0 {
 		return `{"message":"草稿为空，无需保存"}`, nil
 	}
 
-	saved := 0
-	var entryIDs []string
-	for _, d := range sess.Draft {
+	// Idempotent commit: each draft slot carries its own IdempotencyKey, so
+	// re-invoking confirm_draft after a partial failure resolves to the same
+	// rows instead of duplicating them. We collect successes and the index of
+	// the first failure (if any); on full success we clear the draft, on
+	// partial failure we drop the already-saved prefix and return a
+	// recoverable ToolError so the LLM can re-confirm without producing dups.
+	entryIDs := make([]string, 0, len(sess.Draft))
+	for i, d := range sess.Draft {
 		ref, err := t.writer.Create(ctx, LedgerCreateInput{
-			CustomerID:   d.CustomerID,
-			CustomerName: d.CustomerName,
-			ProductName:  d.ProductName,
-			UnitPrice:    d.UnitPrice,
-			Quantity:     d.Quantity,
-			Unit:         d.Unit,
-			EntryDate:    d.EntryDate,
-			Notes:        d.Notes,
+			CustomerID:     d.CustomerID,
+			CustomerName:   d.CustomerName,
+			ProductName:    d.ProductName,
+			UnitPrice:      d.UnitPrice,
+			Quantity:       d.Quantity,
+			Unit:           d.Unit,
+			EntryDate:      d.EntryDate,
+			Notes:          d.Notes,
+			IdempotencyKey: d.IdempotencyKey,
 		})
 		if err != nil {
-			return "", fmt.Errorf("confirm_draft: save entry: %w", err)
+			// Trim already-saved prefix so a retry only attempts the rest.
+			sess.Draft = sess.Draft[i:]
+			t.sessions.Set(sess)
+			te := FromDomainError(err)
+			if te == nil {
+				te = NewToolError(CodeInternal, err.Error())
+			}
+			te.WithContext(map[string]any{
+				"saved_so_far": entryIDs,
+				"failed_index": i,
+				"remaining":    len(sess.Draft),
+			}).WithHint("草稿已保留未保存部分，可重试 confirm_draft")
+			return "", te
 		}
 		entryIDs = append(entryIDs, ref.ID)
-		saved++
 	}
+	saved := len(entryIDs)
 
-	results := make([]map[string]any, 0, len(sess.Draft))
+	results := make([]map[string]any, 0, saved)
 	for i, d := range sess.Draft {
 		results = append(results, map[string]any{
 			"entry_id":      entryIDs[i],
@@ -556,6 +605,7 @@ func (t *confirmDraftTool) InvokableRun(ctx context.Context, _ string, _ ...tool
 		map[string]string{"entry_ids": strings.Join(entryIDs, ",")})
 
 	sess.Draft = nil
+	sess.SetPhase(PhaseCommitted)
 	t.sessions.Set(sess)
 	return mustJSON(map[string]any{"saved": saved, "entries": results, "entry_ids": entryIDs, "message": fmt.Sprintf("已成功保存 %d 条记录", saved)}), nil
 }
@@ -618,7 +668,8 @@ func (t *queryEntriesTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		return "", fmt.Errorf("query_entries: %w", err)
 	}
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	summary := fmt.Sprintf("查询到 %d 条记录", len(entries))
 	if p.CustomerName != "" {
 		summary += "（" + p.CustomerName + "）"
@@ -687,7 +738,8 @@ func (t *updateEntryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		return "", fmt.Errorf("update_entry: %w", err)
 	}
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	var changes []string
 	if p.ProductName != "" {
 		changes = append(changes, "商品→"+p.ProductName)
@@ -709,81 +761,204 @@ func (t *updateEntryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	return mustJSON(entry), nil
 }
 
-// --- delete_entry ---
+// --- propose_delete_entry ---
+//
+// Two-step destructive flow: propose_X stages an operation and returns an
+// opaque token + human-readable preview. The agent surfaces the preview to
+// the user; only after explicit confirmation should it call commit_operation
+// with the token. Tokens are session-scoped and expire after 5 minutes.
 
-type deleteEntryTool struct {
+type proposeDeleteEntryTool struct {
 	sessions SessionStorer
-	writer   LedgerWriter
+	querier  LedgerQuerier
+	tokens   *TokenStore
 }
 
-func (t *deleteEntryTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+func (t *proposeDeleteEntryTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
-		Name: "delete_entry",
-		Desc: "删除一条已保存的出货记录",
+		Name: "propose_delete_entry",
+		Desc: "提议删除一条出货记录。返回 operation_token 与 preview，需用户明确同意后再调用 commit_operation。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"entry_id": {Type: schema.String, Desc: "记录ID", Required: true},
 		}),
 	}, nil
 }
 
-func (t *deleteEntryTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+func (t *proposeDeleteEntryTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var p struct {
 		EntryID string `json:"entry_id"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
-		return "", fmt.Errorf("delete_entry: parse args: %w", err)
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("propose_delete_entry: parse args: %v", err))
+	}
+	if strings.TrimSpace(p.EntryID) == "" {
+		return "", NewToolError(CodeInvalidArgs, "entry_id is required")
 	}
 
-	if err := t.writer.Delete(ctx, p.EntryID); err != nil {
-		return "", fmt.Errorf("delete_entry: %w", err)
+	entry, err := t.querier.GetByID(ctx, p.EntryID)
+	if err != nil {
+		if te := FromDomainError(err); te != nil {
+			return "", te
+		}
+		return "", fmt.Errorf("propose_delete_entry: %w", err)
 	}
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
-	sess.AppendOp("delete",
-		fmt.Sprintf("删除记录 %s", p.EntryID),
-		map[string]string{"entry_id": p.EntryID})
+	preview := fmt.Sprintf("将删除：%s 于 %s 购买 %s %.2f%s，金额 %.2f 元",
+		entry.CustomerName,
+		entry.EntryDate.Format("2006-01-02"),
+		entry.ProductName, entry.Quantity, entry.Unit, entry.Amount,
+	)
+
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
+	op := t.tokens.Issue(sess.ID, OpDeleteEntry, map[string]any{
+		"entry_id": entry.ID,
+	}, preview)
+	sess.SetPhase(PhasePendingDestructive)
 	t.sessions.Set(sess)
 
-	return mustJSON(map[string]string{"message": "记录已删除", "deleted_id": p.EntryID}), nil
+	return mustJSON(map[string]any{
+		"operation_token": op.Token,
+		"kind":            string(op.Kind),
+		"preview":         preview,
+		"expires_in":      int(tokenTTL.Seconds()),
+		"message":         "请向用户读出 preview 并请求明确确认，随后调用 commit_operation 提交",
+	}), nil
 }
 
-// --- settle_account ---
+// --- propose_settle_account ---
 
-type settleAccountTool struct {
+type proposeSettleAccountTool struct {
 	sessions SessionStorer
 	querier  LedgerQuerier
-	writer   LedgerWriter
+	tokens   *TokenStore
 }
 
-func (t *settleAccountTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+func (t *proposeSettleAccountTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
-		Name: "settle_account",
-		Desc: "对指定客户进行清账，将所有未结账目标记为已清账",
+		Name: "propose_settle_account",
+		Desc: "提议为指定客户清账。返回 operation_token 与 preview，需用户明确同意后再调用 commit_operation。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"customer_id": {Type: schema.String, Desc: "客户ID", Required: true},
 		}),
 	}, nil
 }
 
-func (t *settleAccountTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+func (t *proposeSettleAccountTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var p struct {
 		CustomerID string `json:"customer_id"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
-		return "", fmt.Errorf("settle_account: parse args: %w", err)
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("propose_settle_account: parse args: %v", err))
+	}
+	if strings.TrimSpace(p.CustomerID) == "" {
+		return "", NewToolError(CodeInvalidArgs, "customer_id is required")
 	}
 
-	if err := t.writer.SettleByCustomer(ctx, p.CustomerID); err != nil {
-		return "", fmt.Errorf("settle_account: %w", err)
+	summaries, err := t.querier.SummaryByCustomer(ctx, p.CustomerID)
+	if err != nil {
+		return "", fmt.Errorf("propose_settle_account: summary: %w", err)
 	}
+	if len(summaries) == 0 {
+		return "", NewToolError(CodeNotFound, "客户无可清账记录").WithContext(map[string]any{"customer_id": p.CustomerID})
+	}
+	s0 := summaries[0]
+	preview := fmt.Sprintf("将将 %s 的 %d 条未清账记录全部标为已清，总额 %.2f 元（待付 %.2f）",
+		s0.CustomerName, s0.EntryCount, s0.TotalAmount, s0.PendingAmount)
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
-	sess.AppendOp("settle",
-		"清账完成",
-		map[string]string{"customer_id": p.CustomerID})
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
+	op := t.tokens.Issue(sess.ID, OpSettleAccount, map[string]any{
+		"customer_id":   s0.CustomerID,
+		"customer_name": s0.CustomerName,
+	}, preview)
+	sess.SetPhase(PhasePendingDestructive)
 	t.sessions.Set(sess)
 
-	return `{"message":"清账成功"}`, nil
+	return mustJSON(map[string]any{
+		"operation_token": op.Token,
+		"kind":            string(op.Kind),
+		"preview":         preview,
+		"expires_in":      int(tokenTTL.Seconds()),
+		"message":         "请向用户读出 preview 并请求明确确认，随后调用 commit_operation 提交",
+	}), nil
+}
+
+// --- commit_operation ---
+
+type commitOperationTool struct {
+	sessions SessionStorer
+	writer   LedgerWriter
+	tokens   *TokenStore
+}
+
+func (t *commitOperationTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: "commit_operation",
+		Desc: "提交先前通过 propose_* 提议的不可逆操作。仅在用户明确同意后调用。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"operation_token": {Type: schema.String, Desc: "propose_* 返回的 token", Required: true},
+		}),
+	}, nil
+}
+
+func (t *commitOperationTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var p struct {
+		OperationToken string `json:"operation_token"`
+	}
+	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("commit_operation: parse args: %v", err))
+	}
+	if strings.TrimSpace(p.OperationToken) == "" {
+		return "", NewToolError(CodeInvalidArgs, "operation_token is required")
+	}
+
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
+	op := t.tokens.Consume(p.OperationToken, sess.ID)
+	if op == nil {
+		return "", NewToolError(CodeTokenInvalid, "operation_token 无效、已过期或不属于当前会话").
+			WithHint("重新调用 propose_* 获取新 token")
+	}
+
+	switch op.Kind {
+	case OpDeleteEntry:
+		entryID, _ := op.Payload["entry_id"].(string)
+		if err := t.writer.Delete(ctx, entryID); err != nil {
+			if te := FromDomainError(err); te != nil {
+				return "", te
+			}
+			return "", fmt.Errorf("commit_operation: delete: %w", err)
+		}
+		sess.AppendOp("delete", op.Preview, map[string]string{"entry_id": entryID})
+		sess.SetPhase(PhaseIdle)
+		t.sessions.Set(sess)
+		return mustJSON(map[string]any{
+			"committed":  string(op.Kind),
+			"deleted_id": entryID,
+			"message":    "记录已删除",
+		}), nil
+
+	case OpSettleAccount:
+		customerID, _ := op.Payload["customer_id"].(string)
+		if err := t.writer.SettleByCustomer(ctx, customerID); err != nil {
+			if te := FromDomainError(err); te != nil {
+				return "", te
+			}
+			return "", fmt.Errorf("commit_operation: settle: %w", err)
+		}
+		sess.AppendOp("settle", op.Preview, map[string]string{"customer_id": customerID})
+		sess.SetPhase(PhaseIdle)
+		t.sessions.Set(sess)
+		return mustJSON(map[string]any{
+			"committed":   string(op.Kind),
+			"customer_id": customerID,
+			"message":     "清账成功",
+		}), nil
+
+	default:
+		return "", NewToolError(CodeInternal, fmt.Sprintf("unknown operation kind %q", op.Kind))
+	}
 }
 
 // --- calculate_summary ---
@@ -882,11 +1057,13 @@ func (t *recordPaymentTool) InvokableRun(ctx context.Context, argumentsInJSON st
 		return "", fmt.Errorf("record_payment: search customer: %w", err)
 	}
 	if len(results) == 0 || results[0].Score > 0 {
-		return mustJSON(map[string]any{
-			"error":   "customer_not_found",
-			"query":   p.CustomerName,
-			"message": fmt.Sprintf("找不到客户 %q，请确认客户名称", p.CustomerName),
-		}), nil
+		return "", NewToolError(CodeNotFound,
+			fmt.Sprintf("找不到精确匹配的客户 %q", p.CustomerName)).
+			WithHint("调用 search_customer 查看近似候选与用户确认，或使用 add_customer_alias 添加别名").
+			WithContext(map[string]any{
+				"query":      p.CustomerName,
+				"candidates": results,
+			})
 	}
 	customer := results[0]
 
@@ -904,7 +1081,8 @@ func (t *recordPaymentTool) InvokableRun(ctx context.Context, argumentsInJSON st
 	// Get remaining balance
 	totalPaid, _ := t.payments.TotalByCustomer(ctx, customer.ID)
 
-	sess := t.sessions.GetOrCreate(sessionIDFromCtx(ctx))
+	sess, unlock := lockedSession(ctx, t.sessions)
+	defer unlock()
 	sess.AppendOp("payment",
 		fmt.Sprintf("%s 收款 %.2f 元，累计已收 %.2f 元", customer.Name, p.Amount, totalPaid),
 		map[string]string{"payment_id": ref.ID, "customer_id": customer.ID})
@@ -927,4 +1105,151 @@ func mustJSON(v any) string {
 		return fmt.Sprintf(`{"error":"json marshal failed: %s"}`, err.Error())
 	}
 	return string(b)
+}
+
+// --- list_products ---
+
+type listProductsTool struct {
+	products ProductSearcher
+}
+
+func (t *listProductsTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name:        "list_products",
+		Desc:        "列出商品目录（含别名、默认单位、参考价）",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+	}, nil
+}
+
+func (t *listProductsTool) InvokableRun(ctx context.Context, _ string, _ ...tool.Option) (string, error) {
+	products, err := t.products.ListAll(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list_products: %w", err)
+	}
+	return mustJSON(map[string]any{"products": products, "count": len(products)}), nil
+}
+
+// --- list_payments ---
+
+type listPaymentsTool struct {
+	sessions SessionStorer
+	searcher CustomerSearcher
+	payments PaymentRecorder
+}
+
+func (t *listPaymentsTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: "list_payments",
+		Desc: "列出指定客户的所有收款记录。客户名需精确匹配。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"customer_id":   {Type: schema.String, Desc: "客户ID（优先于customer_name）"},
+			"customer_name": {Type: schema.String, Desc: "客户名称（精确匹配）"},
+		}),
+	}, nil
+}
+
+func (t *listPaymentsTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var p struct {
+		CustomerID   string `json:"customer_id"`
+		CustomerName string `json:"customer_name"`
+	}
+	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("list_payments: parse args: %v", err))
+	}
+	id := strings.TrimSpace(p.CustomerID)
+	if id == "" {
+		name := strings.TrimSpace(p.CustomerName)
+		if name == "" {
+			return "", NewToolError(CodeInvalidArgs, "customer_id or customer_name is required")
+		}
+		results, err := t.searcher.Search(ctx, name, 3)
+		if err != nil {
+			return "", fmt.Errorf("list_payments: search: %w", err)
+		}
+		if len(results) == 0 || results[0].Score > 0 {
+			return "", NewToolError(CodeNotFound,
+				fmt.Sprintf("找不到精确匹配的客户 %q", name)).
+				WithContext(map[string]any{"candidates": results})
+		}
+		id = results[0].ID
+	}
+	payments, err := t.payments.ListByCustomer(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("list_payments: %w", err)
+	}
+	total, _ := t.payments.TotalByCustomer(ctx, id)
+	return mustJSON(map[string]any{
+		"customer_id": id,
+		"payments":    payments,
+		"count":       len(payments),
+		"total_paid":  total,
+	}), nil
+}
+
+// --- add_customer_alias ---
+
+type addCustomerAliasTool struct {
+	searcher CustomerSearcher
+}
+
+func (t *addCustomerAliasTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: "add_customer_alias",
+		Desc: "为已有客户添加一个别名/简称。日后用该别名也能精确匹配到客户。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"customer_id": {Type: schema.String, Desc: "客户ID", Required: true},
+			"alias":       {Type: schema.String, Desc: "别名", Required: true},
+		}),
+	}, nil
+}
+
+func (t *addCustomerAliasTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var p struct {
+		CustomerID string `json:"customer_id"`
+		Alias      string `json:"alias"`
+	}
+	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("add_customer_alias: parse args: %v", err))
+	}
+	if err := t.searcher.AddAlias(ctx, CustomerAliasInput{CustomerID: p.CustomerID, Alias: p.Alias}); err != nil {
+		if te := FromDomainError(err); te != nil {
+			return "", te
+		}
+		return "", fmt.Errorf("add_customer_alias: %w", err)
+	}
+	return mustJSON(map[string]string{"message": "别名已添加", "customer_id": p.CustomerID, "alias": p.Alias}), nil
+}
+
+// --- add_product_alias ---
+
+type addProductAliasTool struct {
+	products ProductSearcher
+}
+
+func (t *addProductAliasTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: "add_product_alias",
+		Desc: "为已有商品添加一个别名/简称。日后用该别名也能精确匹配到商品。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"product_id": {Type: schema.String, Desc: "商品ID", Required: true},
+			"alias":      {Type: schema.String, Desc: "别名", Required: true},
+		}),
+	}, nil
+}
+
+func (t *addProductAliasTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var p struct {
+		ProductID string `json:"product_id"`
+		Alias     string `json:"alias"`
+	}
+	if err := json.Unmarshal([]byte(argumentsInJSON), &p); err != nil {
+		return "", NewToolError(CodeInvalidArgs, fmt.Sprintf("add_product_alias: parse args: %v", err))
+	}
+	if err := t.products.AddAlias(ctx, ProductAliasInput{ProductID: p.ProductID, Alias: p.Alias}); err != nil {
+		if te := FromDomainError(err); te != nil {
+			return "", te
+		}
+		return "", fmt.Errorf("add_product_alias: %w", err)
+	}
+	return mustJSON(map[string]string{"message": "别名已添加", "product_id": p.ProductID, "alias": p.Alias}), nil
 }

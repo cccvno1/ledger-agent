@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // Wire assembles the chat feature and registers its routes on mux.
-func Wire(ctx context.Context, mux *http.ServeMux, db *sql.DB, cfg conf.MiniMax, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
+func Wire(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, db *sql.DB, cfg conf.MiniMax, searcher CustomerSearcher, writer LedgerWriter, querier LedgerQuerier, products ProductSearcher, payments PaymentRecorder) (*Service, error) {
 	var sessions SessionStorer
 	if db != nil {
 		sessions = NewDBSessionStore(db)
@@ -20,7 +21,7 @@ func Wire(ctx context.Context, mux *http.ServeMux, db *sql.DB, cfg conf.MiniMax,
 		sessions = mem
 	}
 
-	svc, err := NewService(ctx, cfg, sessions, searcher, writer, querier, products, payments)
+	svc, err := NewService(ctx, logger, cfg, sessions, searcher, writer, querier, products, payments)
 	if err != nil {
 		return nil, err
 	}

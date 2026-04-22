@@ -33,6 +33,9 @@ type CreateInput struct {
 	Unit         string
 	EntryDate    time.Time
 	Notes        string
+	// IdempotencyKey, when set, makes Create safe to retry. Two Create calls
+	// with the same key return the same row instead of inserting twice.
+	IdempotencyKey string
 }
 
 // Create inserts a new ledger entry.
@@ -65,18 +68,19 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Entry, error) {
 		unit = "个"
 	}
 	e := &Entry{
-		ID:           uuid.NewString(),
-		CustomerID:   customerID,
-		CustomerName: customerName,
-		ProductName:  productName,
-		UnitPrice:    in.UnitPrice,
-		Quantity:     in.Quantity,
-		Unit:         unit,
-		Amount:       in.UnitPrice * in.Quantity,
-		EntryDate:    in.EntryDate,
-		Notes:        in.Notes,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             uuid.NewString(),
+		CustomerID:     customerID,
+		CustomerName:   customerName,
+		ProductName:    productName,
+		UnitPrice:      in.UnitPrice,
+		Quantity:       in.Quantity,
+		Unit:           unit,
+		Amount:         in.UnitPrice * in.Quantity,
+		EntryDate:      in.EntryDate,
+		Notes:          in.Notes,
+		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -85,11 +89,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Entry, error) {
 	}
 	defer tx.Rollback()
 
-	if err := s.store.Create(ctx, tx, e); err != nil {
+	if _, err := s.store.Create(ctx, tx, e); err != nil {
 		return nil, fmt.Errorf("ledger: create: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("ledger: create: commit: %w", err)
+	}
+	// On idempotent conflict the store rewrites e.ID to the surviving row;
+	// re-fetch to return canonical timestamps.
+	if e.IdempotencyKey != "" {
+		if fresh, err := s.store.GetByID(ctx, e.ID); err == nil && fresh != nil {
+			return fresh, nil
+		}
 	}
 	return e, nil
 }

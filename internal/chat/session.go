@@ -12,10 +12,17 @@ import (
 )
 
 // SessionStorer is the interface that any session store must implement.
+//
+// LockFor returns a per-session-id mutex used to serialise the
+// load → mutate → save sequence inside tool handlers. Without it,
+// parallel tool calls within a single ReAct iteration race on the
+// persisted record (each loads a stale snapshot, appends locally,
+// then writes back — last write wins, the rest are lost).
 type SessionStorer interface {
 	Get(id string) *Session
 	GetOrCreate(id string) *Session
 	Set(sess *Session)
+	LockFor(id string) *sync.Mutex
 }
 
 // sessionRecord is the JSON-serializable shape stored in the database.
@@ -25,19 +32,27 @@ type sessionRecord struct {
 	Draft        []DraftEntry      `json:"draft"`
 	OpLog        []OpEntry         `json:"op_log"`
 	Stats        SessionStats      `json:"stats"`
+	Phase        Phase             `json:"phase,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	LastActiveAt time.Time         `json:"last_active_at"`
 }
 
 // SessionStore is a thread-safe in-memory session store.
 type SessionStore struct {
-	mu   sync.RWMutex
-	data map[string]*Session
+	mu      sync.RWMutex
+	data    map[string]*Session
+	idLocks sync.Map // id → *sync.Mutex
 }
 
 // NewSessionStore creates an empty SessionStore.
 func NewSessionStore() *SessionStore {
 	return &SessionStore{data: make(map[string]*Session)}
+}
+
+// LockFor returns the per-id mutex, lazily creating it on first access.
+func (s *SessionStore) LockFor(id string) *sync.Mutex {
+	v, _ := s.idLocks.LoadOrStore(id, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // Get returns the session or nil if it does not exist.
@@ -114,12 +129,19 @@ func (s *SessionStore) evict(ttl time.Duration) {
 // DBSessionStore is a Postgres-backed session store.
 // Sessions are stored as JSONB in the sessions table.
 type DBSessionStore struct {
-	db *sql.DB
+	db      *sql.DB
+	idLocks sync.Map // id → *sync.Mutex
 }
 
 // NewDBSessionStore creates a DBSessionStore.
 func NewDBSessionStore(db *sql.DB) *DBSessionStore {
 	return &DBSessionStore{db: db}
+}
+
+// LockFor returns the per-id mutex, lazily creating it on first access.
+func (s *DBSessionStore) LockFor(id string) *sync.Mutex {
+	v, _ := s.idLocks.LoadOrStore(id, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // Get returns the session by ID, or nil if not found.
@@ -180,6 +202,7 @@ func toRecord(sess *Session) *sessionRecord {
 		Draft:        sess.Draft,
 		OpLog:        sess.OpLog,
 		Stats:        sess.Stats,
+		Phase:        sess.CurrentPhase(),
 		CreatedAt:    sess.CreatedAt,
 		LastActiveAt: sess.LastActiveAt,
 	}
@@ -192,6 +215,7 @@ func fromRecord(id string, rec *sessionRecord) *Session {
 		Draft:        rec.Draft,
 		OpLog:        rec.OpLog,
 		Stats:        rec.Stats,
+		Phase:        rec.Phase,
 		CreatedAt:    rec.CreatedAt,
 		LastActiveAt: rec.LastActiveAt,
 	}

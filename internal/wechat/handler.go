@@ -52,9 +52,13 @@ func (h *handler) handle(ctx context.Context, c *client, msg weixinMessage) {
 		return
 	}
 
+	h.logger.Info("wechat: sending reply", "to", msg.FromUserID, "reply", truncate(reply, 120))
+
 	// WeChat doesn't render markdown — convert before sending.
 	if err := c.sendText(ctx, msg.FromUserID, msg.ContextToken, markdownToPlain(reply)); err != nil {
 		h.logger.Error("wechat: send failed", "err", err)
+	} else {
+		h.logger.Info("wechat: send ok", "to", msg.FromUserID)
 	}
 }
 

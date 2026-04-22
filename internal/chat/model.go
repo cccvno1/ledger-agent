@@ -21,6 +21,11 @@ type DraftEntry struct {
 	Amount       float64   `json:"amount"`
 	EntryDate    time.Time `json:"entry_date"`
 	Notes        string    `json:"notes,omitempty"`
+	// IdempotencyKey is generated when the entry is added to the draft and
+	// passed to LedgerWriter.Create on commit. A retried confirm_draft after
+	// a partial failure will re-encounter the same key and the writer will
+	// return the surviving row instead of inserting a duplicate.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // OpEntry records one successful mutation for the structured context block.
@@ -44,14 +49,33 @@ const maxOpLog = 10
 
 // Session holds per-conversation state.
 type Session struct {
-	mu           sync.Mutex // guards all mutable fields below
-	ID           string
-	Messages     []*schema.Message
-	Draft        []DraftEntry
-	OpLog        []OpEntry
-	Stats        SessionStats
+	mu       sync.Mutex // guards all mutable fields below
+	ID       string
+	Messages []*schema.Message
+	Draft    []DraftEntry
+	OpLog    []OpEntry
+	Stats    SessionStats
+	// Phase is the conversational state machine position. Drives the policy
+	// layer: tools declare AllowedPhases() and the Registry rejects calls
+	// whose tool is not valid in the current phase. Empty string is treated
+	// as PhaseIdle (back-compat for sessions persisted before Phase B).
+	Phase        Phase
 	CreatedAt    time.Time
 	LastActiveAt time.Time
+}
+
+// CurrentPhase returns Phase, normalising the empty zero value to PhaseIdle.
+func (s *Session) CurrentPhase() Phase {
+	if s.Phase == "" {
+		return PhaseIdle
+	}
+	return s.Phase
+}
+
+// SetPhase mutates the session phase. Callers should hold s.mu (Service.Chat
+// already locks it for the entire turn) or invoke from within a tool handler.
+func (s *Session) SetPhase(p Phase) {
+	s.Phase = p
 }
 
 // AppendOp records a successful mutation and updates stats.

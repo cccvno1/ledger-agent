@@ -9,11 +9,12 @@ import (
 
 // qrHandler serves the WeChat QR code login flow over HTTP.
 type qrHandler struct {
-	logger *slog.Logger
+	logger      *slog.Logger
+	onConnected func(*Credentials) // called after credentials are saved; may be nil
 }
 
-func newQRHandler(logger *slog.Logger) *qrHandler {
-	return &qrHandler{logger: logger}
+func newQRHandler(logger *slog.Logger, onConnected func(*Credentials)) *qrHandler {
+	return &qrHandler{logger: logger, onConnected: onConnected}
 }
 
 // GenerateQRCode handles POST /api/v1/wechat/qrcode.
@@ -50,6 +51,8 @@ func (h *qrHandler) CheckStatus(w http.ResponseWriter, r *http.Request) {
 	if status == qrStatusConfirmed && creds != nil {
 		if saveErr := SaveCredentials(creds); saveErr != nil {
 			h.logger.Error("wechat: save credentials", "err", saveErr)
+		} else if h.onConnected != nil {
+			go h.onConnected(creds)
 		}
 	}
 

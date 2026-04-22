@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 )
 
 // Wire registers QR login endpoints, loads saved WeChat credentials, and
@@ -16,8 +17,36 @@ import (
 // GET /api/v1/wechat/qrcode/status.
 // Alternatively, run: go run ./cmd/wechat-login
 func Wire(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, chatter Chatter) error {
+	h := newHandler(chatter, logger)
+
+	// mu protects the active monitor cancel func.
+	var mu sync.Mutex
+	var cancelMonitor context.CancelFunc
+
+	startMonitor := func(creds *Credentials) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Stop any previously running monitor.
+		if cancelMonitor != nil {
+			cancelMonitor()
+		}
+
+		c := newClient(creds)
+		mon, err := newMonitor(c, h, logger)
+		if err != nil {
+			logger.Error("wechat: create monitor", "err", err)
+			return
+		}
+
+		monCtx, cancel := context.WithCancel(ctx)
+		cancelMonitor = cancel
+		go mon.run(monCtx)
+		logger.Info("wechat: bridge started", "bot_id", creds.ILinkBotID)
+	}
+
 	// Register QR login endpoints (no auth required — see BearerAuth whitelist).
-	qr := newQRHandler(logger)
+	qr := newQRHandler(logger, startMonitor)
 	mux.HandleFunc("POST /api/v1/wechat/qrcode", qr.GenerateQRCode)
 	mux.HandleFunc("GET /api/v1/wechat/qrcode/status", qr.CheckStatus)
 
@@ -30,14 +59,6 @@ func Wire(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, chatter 
 		return nil
 	}
 
-	c := newClient(creds)
-	h := newHandler(chatter, logger)
-	mon, err := newMonitor(c, h, logger)
-	if err != nil {
-		return fmt.Errorf("wechat: create monitor: %w", err)
-	}
-
-	go mon.run(ctx)
-	logger.Info("wechat: bridge started", "bot_id", creds.ILinkBotID)
+	startMonitor(creds)
 	return nil
 }

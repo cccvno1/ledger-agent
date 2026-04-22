@@ -32,4 +32,10 @@ type MiniMax struct {
 	BaseURL            string `yaml:"base_url"`
 	Model              string `yaml:"model"`
 	MaxHistoryMessages int    `yaml:"max_history_messages"`
+	// MaxAgentSteps caps the ReAct loop iterations per Chat turn. If <=0 the
+	// agent uses (number_of_tools + 8) as the bound.
+	MaxAgentSteps int `yaml:"max_agent_steps"`
+	// ChatTimeoutSeconds bounds the entire Chat() call (LLM + all tools).
+	// If <=0 the service uses 60s.
+	ChatTimeoutSeconds int `yaml:"chat_timeout_seconds"`
 }

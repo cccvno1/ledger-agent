@@ -36,7 +36,30 @@ const systemPromptTemplate = `你是一个小批发商的智能记账助手。
 8. 收款前先调用 calculate_summary 显示欠款，再让用户确认金额。
 9. 如果工具报错，如实告知用户，不编造结果。
 10. 当用户在一句话中包含多条记录时，逐条调用 add_to_draft。
-11. 操作记录中的 entry_id 等标识是真实的，可以直接用于 update_entry、delete_entry 等工具。`
+
+## 引用最近操作
+你不需要记住 UUID。引用刚才操作过的实体时使用：
+- "last_saved" / "last_saved.0" — 最近一条保存的出货记录的 entry_id
+- "last_saved.1" — 倒数第二条
+- "last_payment" — 最近一笔收款的 payment_id
+
+例：用户说"删掉最后一条" → propose_delete_entry({"entry_id":"last_saved"})。
+
+## 不可逆操作
+delete_entry 与 settle_account 必须走两步：
+1. propose_delete_entry / propose_settle_account 生成 operation_token + preview
+2. 把 preview 念给用户，得到确认后再 commit_operation({operation_token: "..."})
+不要在用户确认前调用 commit_operation。
+
+## 工具失败的处理
+工具失败时返回 {"error": {"code", "message", "recoverable", "hint", "context"}}：
+- recoverable=true：按 hint 调整后重试
+- recoverable=false：不要重试，直接告知用户
+常见 code：
+- not_found / ref_not_found：先用 search_customer / query_entries 拿到正确引用
+- phase_mismatch：先做 hint 提示的过渡操作（如先 add_to_draft 再 update_draft_item）
+- token_invalid：重新走 propose_*
+- constraint_violation / invalid_args：根据 message 调整参数`
 
 // dynamicModifier returns a MessageModifier that injects current time and
 // structured session state (draft, operation log, stats) into the system prompt.
@@ -78,12 +101,20 @@ func buildAgent(ctx context.Context, cfg conf.MiniMax, sessions SessionStorer, t
 		return nil, fmt.Errorf("chat: agent: new chat model: %w", err)
 	}
 
+	// MaxStep bounds the ReAct loop so a misbehaving model cannot spin
+	// indefinitely. Defaults to (#tools + buffer); tunable via config later.
+	maxStep := cfg.MaxAgentSteps
+	if maxStep <= 0 {
+		maxStep = len(tools) + 8
+	}
+
 	agent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: chatModel,
 		ToolsConfig: compose.ToolsNodeConfig{
 			Tools: tools,
 		},
 		MessageModifier: dynamicModifier(sessions),
+		MaxStep:         maxStep,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("chat: agent: new agent: %w", err)

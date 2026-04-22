@@ -47,7 +47,7 @@ func TestStore_CreateAndGetByID(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	if err := store.Create(context.Background(), tx, e); err != nil {
+	if _, err := store.Create(context.Background(), tx, e); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -81,7 +81,7 @@ func TestStore_MarkSettled(t *testing.T) {
 
 	e := newTestEntry(custID)
 	tx, _ := db.BeginTx(context.Background(), nil)
-	store.Create(context.Background(), tx, e)
+	_, _ = store.Create(context.Background(), tx, e)
 	tx.Commit()
 
 	tx2, _ := db.BeginTx(context.Background(), nil)

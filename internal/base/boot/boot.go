@@ -35,7 +35,7 @@ func Run(ctx context.Context, logger *slog.Logger, cfg *conf.Config) error {
 	productSvc := product.Wire(mux, db)
 	paymentSvc := payment.Wire(mux, db)
 
-	chatSvc, err := chat.Wire(ctx, mux, db, cfg.MiniMax,
+	chatSvc, err := chat.Wire(ctx, mux, logger, db, cfg.MiniMax,
 		&customerAdapter{svc: customerSvc},
 		&ledgerAdapter{svc: ledgerSvc},
 		&ledgerAdapter{svc: ledgerSvc},
@@ -137,14 +137,15 @@ type ledgerAdapter struct {
 
 func (a *ledgerAdapter) Create(ctx context.Context, in chat.LedgerCreateInput) (chat.LedgerEntryRef, error) {
 	e, err := a.svc.Create(ctx, ledger.CreateInput{
-		CustomerID:   in.CustomerID,
-		CustomerName: in.CustomerName,
-		ProductName:  in.ProductName,
-		UnitPrice:    in.UnitPrice,
-		Quantity:     in.Quantity,
-		Unit:         in.Unit,
-		EntryDate:    in.EntryDate,
-		Notes:        in.Notes,
+		CustomerID:     in.CustomerID,
+		CustomerName:   in.CustomerName,
+		ProductName:    in.ProductName,
+		UnitPrice:      in.UnitPrice,
+		Quantity:       in.Quantity,
+		Unit:           in.Unit,
+		EntryDate:      in.EntryDate,
+		Notes:          in.Notes,
+		IdempotencyKey: in.IdempotencyKey,
 	})
 	if err != nil {
 		return chat.LedgerEntryRef{}, err
@@ -170,6 +171,14 @@ func (a *ledgerAdapter) Update(ctx context.Context, in chat.LedgerUpdateInput) (
 
 func (a *ledgerAdapter) Delete(ctx context.Context, entryID string) error {
 	return a.svc.Delete(ctx, ledger.DeleteInput{ID: entryID})
+}
+
+func (a *ledgerAdapter) GetByID(ctx context.Context, id string) (chat.LedgerEntryRef, error) {
+	e, err := a.svc.GetByID(ctx, id)
+	if err != nil {
+		return chat.LedgerEntryRef{}, err
+	}
+	return entryToRef(e), nil
 }
 
 func (a *ledgerAdapter) SettleByCustomer(ctx context.Context, customerID string) error {
@@ -259,6 +268,18 @@ func (a *productAdapter) AddAlias(ctx context.Context, in chat.ProductAliasInput
 	})
 }
 
+func (a *productAdapter) ListAll(ctx context.Context) ([]chat.ProductRef, error) {
+	ps, err := a.svc.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chat.ProductRef, len(ps))
+	for i, p := range ps {
+		out[i] = chat.ProductRef{ID: p.ID, Name: p.Name, DefaultUnit: p.DefaultUnit, ReferencePrice: p.ReferencePrice}
+	}
+	return out, nil
+}
+
 // paymentAdapter adapts payment.Service to chat.PaymentRecorder.
 type paymentAdapter struct {
 	svc *payment.Service
@@ -279,4 +300,16 @@ func (a *paymentAdapter) Create(ctx context.Context, in chat.PaymentCreateInput)
 
 func (a *paymentAdapter) TotalByCustomer(ctx context.Context, customerID string) (float64, error) {
 	return a.svc.TotalByCustomer(ctx, customerID)
+}
+
+func (a *paymentAdapter) ListByCustomer(ctx context.Context, customerID string) ([]chat.PaymentRef, error) {
+	ps, err := a.svc.ListByCustomer(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chat.PaymentRef, len(ps))
+	for i, p := range ps {
+		out[i] = chat.PaymentRef{ID: p.ID, Amount: p.Amount, PaymentDate: p.PaymentDate}
+	}
+	return out, nil
 }

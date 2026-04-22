@@ -16,8 +16,12 @@ type Entry struct {
 	IsSettled    bool
 	SettledAt    *time.Time
 	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// IdempotencyKey, when set, makes Create safe to retry. A duplicate
+	// insert with the same key returns the existing row's ID instead of
+	// inserting a second row.
+	IdempotencyKey string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // CustomerSummary aggregates outstanding amounts for a single customer.
